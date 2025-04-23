@@ -1,0 +1,74 @@
+[
+  {
+    "scholar": "Avery Nguyen",
+    "cohort": "Spring 2025",
+    "amount": 12000,
+    "disbursed_to_date": 7800,
+    "award_date": "2025-02-15",
+    "target_date": "2026-02-15",
+    "next_checkin": "2026-02-20",
+    "owner": "Maya R.",
+    "status": "Active",
+    "notes": "On track with tuition schedule."
+  },
+  {
+    "scholar": "Jordan Wells",
+    "cohort": "Spring 2025",
+    "amount": 10000,
+    "disbursed_to_date": 5200,
+    "award_date": "2025-03-01",
+    "target_date": "2026-03-01",
+    "next_checkin": "2026-02-10",
+    "owner": "Liam S.",
+    "status": "Active",
+    "notes": "Awaiting spring term invoice."
+  },
+  {
+    "scholar": "Priya Desai",
+    "cohort": "Fall 2024",
+    "amount": 15000,
+    "disbursed_to_date": 14250,
+    "award_date": "2024-08-20",
+    "target_date": "2025-12-20",
+    "next_checkin": "2026-01-25",
+    "owner": "Noah T.",
+    "status": "Active",
+    "notes": "Final milestone payment queued."
+  },
+  {
+    "scholar": "Camila Ortiz",
+    "cohort": "Fall 2024",
+    "amount": 9000,
+    "disbursed_to_date": 4100,
+    "award_date": "2024-09-05",
+    "target_date": "2026-01-05",
+    "next_checkin": "2026-02-18",
+    "owner": "Jordan P.",
+    "status": "Active",
+    "notes": "Needs documentation for next release."
+  },
+  {
+    "scholar": "Mateo Silva",
+    "cohort": "Summer 2025",
+    "amount": 11000,
+    "disbursed_to_date": 3300,
+    "award_date": "2025-06-10",
+    "target_date": "2026-06-10",
+    "next_checkin": "2026-03-05",
+    "owner": "Rina K.",
+    "status": "Active",
+    "notes": "Mid-year internship stipend delivered."
+  },
+  {
+    "scholar": "Zara Patel",
+    "cohort": "Summer 2025",
+    "amount": 9500,
+    "disbursed_to_date": 2500,
+    "award_date": "2025-07-01",
+    "target_date": "2026-07-01",
+    "next_checkin": "2026-02-27",
+    "owner": "Eli G.",
+    "status": "At Risk",
+    "notes": "Missing midterm transcript."
+  }
+]

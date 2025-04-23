@@ -1,0 +1,16 @@
+# Ralph Progress Log
+
+## Iteration 1
+- Bootstrapped the Group Scholar Pacing Console Go TUI with Bubble Tea and Lip Gloss.
+- Added disbursement pacing calculations, summary metrics, and a detail panel.
+- Created a sample disbursement dataset plus README usage notes.
+
+## Iteration 2
+- Added check-in urgency status (overdue, due soon, upcoming) to the list and detail views.
+- Expanded summary metrics with overdue/due-soon counts and upcoming check-in previews.
+- Added a configurable due-soon window flag to keep cadence alerts flexible.
+
+## Iteration 2
+- Added a risk-focused sort toggle to surface the most behind-pace awards.
+- Expanded the summary header with pace mix counts and improved check-in preview handling.
+- Updated the README with new summary details and the sorting control.
