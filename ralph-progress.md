@@ -14,3 +14,8 @@
 - Added a risk-focused sort toggle to surface the most behind-pace awards.
 - Expanded the summary header with pace mix counts and improved check-in preview handling.
 - Updated the README with new summary details and the sorting control.
+
+## Iteration 3
+- Added a focus filter that narrows the list to behind-pace or urgent check-ins.
+- Cleaned up the sorting logic and fixed check-in detail rendering.
+- Refreshed README flags and control notes for the new filter.

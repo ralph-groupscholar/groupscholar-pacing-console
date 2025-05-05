@@ -54,17 +54,19 @@ func (a awardItem) Description() string { return a.desc }
 func (a awardItem) FilterValue() string { return a.title }
 
 type model struct {
-	list      list.Model
-	items     []awardItem
-	records   []Disbursement
-	summary   string
-	detail    string
-	ready     bool
-	width     int
-	height    int
-	updatedAt time.Time
+	list              list.Model
+	items             []awardItem
+	baseItems         []awardItem
+	records           []Disbursement
+	summary           string
+	detail            string
+	ready             bool
+	width             int
+	height            int
+	updatedAt         time.Time
 	checkinWindowDays int
 	sortMode          string
+	filterMode        string
 }
 
 var (
@@ -89,8 +91,8 @@ func main() {
 	}
 
 	now := time.Now()
-	items := buildItems(records, now, *checkinWindow)
-	items = sortItems(items, "priority")
+	baseItems := buildItems(records, now, *checkinWindow)
+	items := sortItems(applyFilter(baseItems, "all"), "priority")
 	listModel := list.New(itemsToList(items), list.NewDefaultDelegate(), 0, 0)
 	listModel.Title = "Award Pacing Console"
 	listModel.SetShowStatusBar(false)
@@ -98,14 +100,16 @@ func main() {
 	listModel.SetShowHelp(false)
 
 	m := model{
-		list:      listModel,
-		items:     items,
-		records:   records,
-		summary:   buildSummary(items, *checkinWindow),
-		detail:    buildDetail(items, 0),
-		updatedAt: now,
+		list:              listModel,
+		items:             items,
+		baseItems:         baseItems,
+		records:           records,
+		summary:           buildSummary(items, *checkinWindow),
+		detail:            buildDetail(items, 0),
+		updatedAt:         now,
 		checkinWindowDays: *checkinWindow,
-		sortMode:  "priority",
+		sortMode:          "priority",
+		filterMode:        "all",
 	}
 
 	if _, err := tea.NewProgram(m, tea.WithAltScreen()).Run(); err != nil {
@@ -158,7 +162,7 @@ func sortItems(items []awardItem, mode string) []awardItem {
 		sort.SliceStable(sorted, func(i, j int) bool {
 			return strings.ToLower(sorted[i].data.Scholar) < strings.ToLower(sorted[j].data.Scholar)
 		})
-	default:
+	case "priority":
 		sort.SliceStable(sorted, func(i, j int) bool {
 			left := sorted[i]
 			right := sorted[j]
@@ -179,9 +183,21 @@ func sortItems(items []awardItem, mode string) []awardItem {
 			}
 			return strings.ToLower(left.data.Scholar) < strings.ToLower(right.data.Scholar)
 		})
-	default:
 	}
 	return sorted
+}
+
+func applyFilter(items []awardItem, mode string) []awardItem {
+	if mode != "risk" {
+		return items
+	}
+	filtered := make([]awardItem, 0, len(items))
+	for _, item := range items {
+		if item.pace.Label == "Behind" || item.check.Label == "Overdue" || item.check.Label == "Due Soon" {
+			filtered = append(filtered, item)
+		}
+	}
+	return filtered
 }
 
 func itemsToList(items []awardItem) []list.Item {
@@ -236,6 +252,30 @@ func paceLabel(delta float64) string {
 		return "Behind"
 	}
 	return "On Track"
+}
+
+func checkinRank(label string) int {
+	switch label {
+	case "Overdue":
+		return 0
+	case "Due Soon":
+		return 1
+	case "Scheduled":
+		return 2
+	default:
+		return 3
+	}
+}
+
+func paceRank(label string) int {
+	switch label {
+	case "Behind":
+		return 0
+	case "On Track":
+		return 1
+	default:
+		return 2
+	}
 }
 
 func renderPaceLabel(p paceStatus) string {
@@ -371,10 +411,10 @@ func buildDetail(items []awardItem, index int) string {
 	checkinLine := "Not scheduled"
 	if !check.Date.IsZero() {
 		checkinLine = fmt.Sprintf("%s (%s)", check.Date.Format("Jan 2, 2006"), check.Label)
-		if check.DaysUntil >= 0 {
-			checkinLine = fmt.Sprintf("%s (in %d days, %s)", check.Date.Format("Jan 2, 2006"), check.DaysUntil, check.Label)
+		if check.Days >= 0 {
+			checkinLine = fmt.Sprintf("%s (in %d days, %s)", check.Date.Format("Jan 2, 2006"), check.Days, check.Label)
 		} else {
-			checkinLine = fmt.Sprintf("%s (%d days overdue)", check.Date.Format("Jan 2, 2006"), int(math.Abs(float64(check.DaysUntil))))
+			checkinLine = fmt.Sprintf("%s (%d days overdue)", check.Date.Format("Jan 2, 2006"), int(math.Abs(float64(check.Days))))
 		}
 	}
 	return fmt.Sprintf(
@@ -416,13 +456,26 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 		case "r":
 			m.updatedAt = time.Now()
+			m.baseItems = buildItems(m.records, m.updatedAt, m.checkinWindowDays)
+			m.items = sortItems(applyFilter(m.baseItems, m.filterMode), m.sortMode)
+			m.list.SetItems(itemsToList(m.items))
+			m.list.Select(0)
 		case "s":
-			if m.sortMode == "default" {
-				m.sortMode = "risk"
+			if m.sortMode == "priority" {
+				m.sortMode = "alpha"
 			} else {
-				m.sortMode = "default"
+				m.sortMode = "priority"
 			}
-			m.items = sortItems(m.baseItems, m.sortMode)
+			m.items = sortItems(applyFilter(m.baseItems, m.filterMode), m.sortMode)
+			m.list.SetItems(itemsToList(m.items))
+			m.list.Select(0)
+		case "f":
+			if m.filterMode == "all" {
+				m.filterMode = "risk"
+			} else {
+				m.filterMode = "all"
+			}
+			m.items = sortItems(applyFilter(m.baseItems, m.filterMode), m.sortMode)
 			m.list.SetItems(itemsToList(m.items))
 			m.list.Select(0)
 		}
@@ -432,7 +485,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	m.list, cmd = m.list.Update(msg)
 	index := m.list.Index()
 	m.detail = buildDetail(m.items, index)
-	m.summary = buildSummary(m.items, m.dueSoon)
+	m.summary = buildSummary(m.items, m.checkinWindowDays)
 	return m, cmd
 }
 
@@ -442,7 +495,7 @@ func (m model) View() string {
 	}
 
 	header := headerStyle.Render("Group Scholar Award Pacing Console")
-	meta := subtle.Render(fmt.Sprintf("Press / to filter · s to sort (%s) · r to refresh timestamp · q to quit", m.sortMode))
+	meta := subtle.Render(fmt.Sprintf("Press / to filter · s to sort (%s) · f to focus (%s) · r to refresh timestamp · q to quit", m.sortMode, m.filterMode))
 	stamp := subtle.Render("Updated " + m.updatedAt.Format("Jan 2 15:04"))
 
 	left := panel.Render(m.list.View())

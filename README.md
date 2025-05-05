@@ -7,7 +7,7 @@ Group Scholar Pacing Console is a Go-based TUI that monitors award disbursement 
 - Summary header with awarded/disbursed totals, pace mix, and check-in risk counts
 - Check-in urgency signals (overdue / due soon / upcoming)
 - TUI list with filter support and detail panel
-- Risk sort to surface behind-pace awards
+- Priority sort plus quick focus filter for risk items
 - Sample disbursement dataset for quick demos
 
 ## Getting started
@@ -24,10 +24,10 @@ Run with a custom dataset:
 go run . -data path/to/disbursements.json
 ```
 
-Adjust the due-soon window for check-ins (default 7 days):
+Adjust the due-soon window for check-ins (default 14 days):
 
 ```bash
-go run . -due-soon 10
+go run . -checkin-window 10
 ```
 
 ## Data format
@@ -51,7 +51,8 @@ go run . -due-soon 10
 
 ## Controls
 - `/` to filter
-- `s` to toggle sort mode (default vs risk)
+- `s` to toggle sort mode (priority vs alpha)
+- `f` to toggle focus mode (all vs risk)
 - `r` to refresh the timestamp
 - `q` to quit
 
