@@ -47,6 +47,7 @@ type awardItem struct {
 	data  Disbursement
 	pace  paceStatus
 	check checkinStatus
+	risk  riskStatus
 }
 
 func (a awardItem) Title() string       { return a.title }
@@ -67,6 +68,12 @@ type model struct {
 	checkinWindowDays int
 	sortMode          string
 	filterMode        string
+}
+
+type riskStatus struct {
+	Level string
+	Flags []string
+	Score int
 }
 
 var (
@@ -139,16 +146,19 @@ func buildItems(records []Disbursement, now time.Time, windowDays int) []awardIt
 	for _, record := range records {
 		pace := calculatePace(record, now)
 		check := calculateCheckin(record, now, checkinWindow)
+		risk := calculateRisk(pace, check)
 		label := renderPaceLabel(pace)
 		percent := fmt.Sprintf("%0.1f%%", pace.Percent*100)
 		checkLabel := formatCheckinBadge(check)
-		desc := fmt.Sprintf("%s · %s disbursed · %s · %s", record.Cohort, percent, label, checkLabel)
+		riskLabel := renderRiskLabel(risk)
+		desc := fmt.Sprintf("%s · %s disbursed · %s · %s · %s", record.Cohort, percent, label, checkLabel, riskLabel)
 		items = append(items, awardItem{
 			title: fmt.Sprintf("%s (%s)", record.Scholar, record.Owner),
 			desc:  desc,
 			data:  record,
 			pace:  pace,
 			check: check,
+			risk:  risk,
 		})
 	}
 	return items
@@ -188,12 +198,18 @@ func sortItems(items []awardItem, mode string) []awardItem {
 }
 
 func applyFilter(items []awardItem, mode string) []awardItem {
-	if mode != "risk" {
+	filtered := make([]awardItem, 0, len(items))
+	if mode == "all" {
 		return items
 	}
-	filtered := make([]awardItem, 0, len(items))
 	for _, item := range items {
-		if item.pace.Label == "Behind" || item.check.Label == "Overdue" || item.check.Label == "Due Soon" {
+		if mode == "risk" {
+			if item.pace.Label == "Behind" || item.check.Label == "Overdue" || item.check.Label == "Due Soon" {
+				filtered = append(filtered, item)
+			}
+			continue
+		}
+		if mode == "high" && item.risk.Level == "High" {
 			filtered = append(filtered, item)
 		}
 	}
@@ -302,6 +318,17 @@ func renderCheckinLabel(c checkinStatus) string {
 	}
 }
 
+func renderRiskLabel(r riskStatus) string {
+	switch r.Level {
+	case "High":
+		return statusBehind.Render("Risk: High")
+	case "Medium":
+		return statusOn.Render("Risk: Medium")
+	default:
+		return subtle.Render("Risk: Low")
+	}
+}
+
 func formatDaysLabel(days int) string {
 	if days == 0 {
 		return "today"
@@ -317,6 +344,37 @@ func formatCheckinBadge(c checkinStatus) string {
 		return "Check-in: " + renderCheckinLabel(c)
 	}
 	return fmt.Sprintf("Check-in: %s (%s)", renderCheckinLabel(c), formatDaysLabel(c.Days))
+}
+
+func calculateRisk(pace paceStatus, check checkinStatus) riskStatus {
+	score := 0
+	flags := make([]string, 0, 3)
+	if pace.Label == "Behind" {
+		score += 2
+		flags = append(flags, "Behind pace")
+	}
+	if check.Label == "Overdue" {
+		score += 2
+		flags = append(flags, "Check-in overdue")
+	}
+	if check.Label == "Due Soon" {
+		score++
+		flags = append(flags, "Check-in due soon")
+	}
+	if check.Label == "Unscheduled" {
+		score++
+		flags = append(flags, "Check-in unscheduled")
+	}
+	if pace.Label == "Ahead" {
+		score--
+	}
+	level := "Low"
+	if score >= 3 {
+		level = "High"
+	} else if score >= 2 {
+		level = "Medium"
+	}
+	return riskStatus{Level: level, Flags: flags, Score: score}
 }
 
 func parseDateOrNow(value string, fallback time.Time) time.Time {
@@ -355,6 +413,9 @@ func buildSummary(items []awardItem, dueSoonDays int) string {
 	behind := 0
 	overdue := 0
 	dueSoon := 0
+	high := 0
+	medium := 0
+	low := 0
 	upcoming := make([]string, 0, len(items))
 	for _, item := range items {
 		record := item.data
@@ -374,6 +435,14 @@ func buildSummary(items []awardItem, dueSoonDays int) string {
 		if item.check.Label == "Due Soon" {
 			dueSoon++
 		}
+		switch item.risk.Level {
+		case "High":
+			high++
+		case "Medium":
+			medium++
+		default:
+			low++
+		}
 		if !item.check.Date.IsZero() && item.check.Label != "Overdue" {
 			upcoming = append(upcoming, item.check.Date.Format("Jan 2")+" · "+record.Scholar)
 		}
@@ -386,13 +455,16 @@ func buildSummary(items []awardItem, dueSoonDays int) string {
 	} else if len(preview) > 64 {
 		preview = preview[:64] + "…"
 	}
-	return fmt.Sprintf("$%0.0f awarded · $%0.0f disbursed (%0.1f%%) · Pace %d ahead / %d on / %d behind · %d overdue · %d due in %d days · Next: %s",
+	return fmt.Sprintf("$%0.0f awarded · $%0.0f disbursed (%0.1f%%) · Pace %d ahead / %d on / %d behind · Risk %d high / %d med / %d low · %d overdue · %d due in %d days · Next: %s",
 		totalAwarded,
 		totalDisbursed,
 		completion*100,
 		ahead,
 		onTrack,
 		behind,
+		high,
+		medium,
+		low,
 		overdue,
 		dueSoon,
 		dueSoonDays,
@@ -408,6 +480,7 @@ func buildDetail(items []awardItem, index int) string {
 	record := item.data
 	pace := item.pace
 	check := item.check
+	risk := item.risk
 	checkinLine := "Not scheduled"
 	if !check.Date.IsZero() {
 		checkinLine = fmt.Sprintf("%s (%s)", check.Date.Format("Jan 2, 2006"), check.Label)
@@ -417,8 +490,12 @@ func buildDetail(items []awardItem, index int) string {
 			checkinLine = fmt.Sprintf("%s (%d days overdue)", check.Date.Format("Jan 2, 2006"), int(math.Abs(float64(check.Days))))
 		}
 	}
+	riskLine := risk.Level
+	if len(risk.Flags) > 0 {
+		riskLine = fmt.Sprintf("%s (%s)", risk.Level, strings.Join(risk.Flags, "; "))
+	}
 	return fmt.Sprintf(
-		"Scholar: %s\nCohort: %s\nOwner: %s\nStatus: %s\nAwarded: $%0.0f\nDisbursed: $%0.0f (%0.1f%%)\nExpected: %0.1f%%\nPace: %s (%0.1f%%)\nCheck-in: %s\nNotes: %s",
+		"Scholar: %s\nCohort: %s\nOwner: %s\nStatus: %s\nAwarded: $%0.0f\nDisbursed: $%0.0f (%0.1f%%)\nExpected: %0.1f%%\nPace: %s (%0.1f%%)\nRisk: %s\nCheck-in: %s\nNotes: %s",
 		record.Scholar,
 		record.Cohort,
 		record.Owner,
@@ -429,6 +506,7 @@ func buildDetail(items []awardItem, index int) string {
 		pace.Expected*100,
 		pace.Label,
 		pace.Delta*100,
+		riskLine,
 		checkinLine,
 		record.Notes,
 	)
@@ -470,9 +548,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.list.SetItems(itemsToList(m.items))
 			m.list.Select(0)
 		case "f":
-			if m.filterMode == "all" {
+			switch m.filterMode {
+			case "all":
 				m.filterMode = "risk"
-			} else {
+			case "risk":
+				m.filterMode = "high"
+			default:
 				m.filterMode = "all"
 			}
 			m.items = sortItems(applyFilter(m.baseItems, m.filterMode), m.sortMode)
