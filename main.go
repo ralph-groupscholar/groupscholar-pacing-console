@@ -88,10 +88,23 @@ var (
 
 func main() {
 	dataPath := flag.String("data", "data/disbursements.json", "path to disbursement data")
+	defaultDBURL := os.Getenv("PACECONSOLE_DATABASE_URL")
+	if defaultDBURL == "" {
+		defaultDBURL = os.Getenv("DATABASE_URL")
+	}
+	dbURL := flag.String("db-url", defaultDBURL, "Postgres connection string (optional)")
 	checkinWindow := flag.Int("checkin-window", 14, "days before a check-in is considered due soon")
 	flag.Parse()
 
-	records, err := loadData(*dataPath)
+	var (
+		records []Disbursement
+		err     error
+	)
+	if *dbURL != "" {
+		records, err = loadDataFromDB(*dbURL)
+	} else {
+		records, err = loadData(*dataPath)
+	}
 	if err != nil {
 		fmt.Println("error loading data:", err)
 		os.Exit(1)

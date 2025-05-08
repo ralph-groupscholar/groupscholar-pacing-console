@@ -19,3 +19,8 @@
 - Added a focus filter that narrows the list to behind-pace or urgent check-ins.
 - Cleaned up the sorting logic and fixed check-in detail rendering.
 - Refreshed README flags and control notes for the new filter.
+
+## Iteration 4
+- Added Postgres-backed loading for award pacing data with an optional db-url flag.
+- Introduced a database loader with date formatting and null-safe handling.
+- Documented database usage in the README.
