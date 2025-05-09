@@ -28,13 +28,16 @@ type snapshotStats struct {
 	DueSoonWindow  int
 }
 
-func syncToDatabase(items []awardItem, dueSoonDays int) error {
-	dsn := stringsTrimSpace(os.Getenv("GS_PACING_DB_DSN"))
+func syncToDatabase(items []awardItem, dueSoonDays int, dsn string) error {
+	dsn = strings.TrimSpace(dsn)
 	if dsn == "" {
-		dsn = stringsTrimSpace(os.Getenv("DATABASE_URL"))
+		dsn = strings.TrimSpace(os.Getenv("GS_PACING_DB_DSN"))
 	}
 	if dsn == "" {
-		return errors.New("GS_PACING_DB_DSN or DATABASE_URL is required for db sync")
+		dsn = strings.TrimSpace(os.Getenv("DATABASE_URL"))
+	}
+	if dsn == "" {
+		return errors.New("GS_PACING_DB_DSN, DATABASE_URL, or -db-url is required for db sync")
 	}
 
 	db, err := sql.Open("pgx", dsn)
@@ -277,6 +280,87 @@ func buildSnapshotStats(items []awardItem, dueSoonDays int) snapshotStats {
 	return stats
 }
 
-func stringsTrimSpace(value string) string {
-	return strings.TrimSpace(value)
+func loadDataFromDB(dsn string) ([]Disbursement, error) {
+	dsn = strings.TrimSpace(dsn)
+	if dsn == "" {
+		return nil, errors.New("db-url is required to load data from Postgres")
+	}
+
+	db, err := sql.Open("pgx", dsn)
+	if err != nil {
+		return nil, err
+	}
+	defer db.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	var snapshotID int64
+	row := db.QueryRowContext(ctx, `
+		SELECT id
+		FROM groupscholar_pacing_console.pacing_snapshots
+		ORDER BY generated_at DESC
+		LIMIT 1;
+	`)
+	if err := row.Scan(&snapshotID); err != nil {
+		return nil, fmt.Errorf("load snapshot: %w", err)
+	}
+
+	rows, err := db.QueryContext(ctx, `
+		SELECT scholar, cohort, owner, status, amount, disbursed_to_date,
+			award_date, target_date, next_checkin, notes
+		FROM groupscholar_pacing_console.pacing_awards
+		WHERE snapshot_id = $1
+		ORDER BY scholar ASC;
+	`, snapshotID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	records := make([]Disbursement, 0)
+	for rows.Next() {
+		var (
+			scholar, cohort, owner, status, notes string
+			amount, disbursedToDate               float64
+			awardDate, targetDate, nextCheckin    sql.NullTime
+		)
+		if err := rows.Scan(
+			&scholar,
+			&cohort,
+			&owner,
+			&status,
+			&amount,
+			&disbursedToDate,
+			&awardDate,
+			&targetDate,
+			&nextCheckin,
+			&notes,
+		); err != nil {
+			return nil, err
+		}
+		records = append(records, Disbursement{
+			Scholar:         scholar,
+			Cohort:          cohort,
+			Owner:           owner,
+			Status:          status,
+			Amount:          amount,
+			DisbursedToDate: disbursedToDate,
+			AwardDate:       formatNullableDate(awardDate),
+			TargetDate:      formatNullableDate(targetDate),
+			NextCheckin:     formatNullableDate(nextCheckin),
+			Notes:           notes,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return records, nil
+}
+
+func formatNullableDate(value sql.NullTime) string {
+	if !value.Valid {
+		return ""
+	}
+	return value.Time.Format("2006-01-02")
 }

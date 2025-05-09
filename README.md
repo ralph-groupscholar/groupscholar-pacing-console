@@ -24,11 +24,16 @@ Run with a custom dataset:
 go run . -data path/to/disbursements.json
 ```
 
-Load records from Postgres (recommended for production data):
+Load the latest snapshot from Postgres:
 
 ```bash
-export PACECONSOLE_DATABASE_URL="postgres://user:password@host:5432/dbname"
-go run . -db-url "$PACECONSOLE_DATABASE_URL"
+go run . -source db -db-url "$PACECONSOLE_DATABASE_URL"
+```
+
+Write a fresh snapshot to Postgres (production only):
+
+```bash
+go run . -db-sync -db-url "$PACECONSOLE_DATABASE_URL"
 ```
 
 Adjust the due-soon window for check-ins (default 14 days):
@@ -66,4 +71,5 @@ go run . -checkin-window 10
 ## Tech
 - Go
 - Bubble Tea + Lip Gloss
+- Postgres (optional sync + snapshot storage)
 - Postgres (optional data source)

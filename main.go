@@ -70,6 +70,22 @@ type model struct {
 	filterMode        string
 }
 
+type summaryMetrics struct {
+	Count          int
+	TotalAwarded   float64
+	TotalDisbursed float64
+	Completion     float64
+	Ahead          int
+	OnTrack        int
+	Behind         int
+	Overdue        int
+	DueSoon        int
+	High           int
+	Medium         int
+	Low            int
+	Upcoming       []string
+}
+
 type riskStatus struct {
 	Level string
 	Flags []string
@@ -94,13 +110,15 @@ func main() {
 	}
 	dbURL := flag.String("db-url", defaultDBURL, "Postgres connection string (optional)")
 	checkinWindow := flag.Int("checkin-window", 14, "days before a check-in is considered due soon")
+	source := flag.String("source", "file", "data source: file or db")
+	dbSync := flag.Bool("db-sync", false, "write a pacing snapshot to Postgres (requires GS_PACING_DB_DSN or -db-url)")
 	flag.Parse()
 
 	var (
 		records []Disbursement
 		err     error
 	)
-	if *dbURL != "" {
+	if strings.EqualFold(*source, "db") {
 		records, err = loadDataFromDB(*dbURL)
 	} else {
 		records, err = loadData(*dataPath)
@@ -112,7 +130,15 @@ func main() {
 
 	now := time.Now()
 	baseItems := buildItems(records, now, *checkinWindow)
+	if *dbSync {
+		if err := syncToDatabase(baseItems, *checkinWindow, *dbURL); err != nil {
+			fmt.Println("error syncing database:", err)
+			os.Exit(1)
+		}
+		return
+	}
 	items := sortItems(applyFilter(baseItems, "all"), "priority")
+	metrics := calculateSummaryMetrics(items)
 	listModel := list.New(itemsToList(items), list.NewDefaultDelegate(), 0, 0)
 	listModel.Title = "Award Pacing Console"
 	listModel.SetShowStatusBar(false)
@@ -124,7 +150,7 @@ func main() {
 		items:             items,
 		baseItems:         baseItems,
 		records:           records,
-		summary:           buildSummary(items, *checkinWindow),
+		summary:           buildSummary(metrics, *checkinWindow),
 		detail:            buildDetail(items, 0),
 		updatedAt:         now,
 		checkinWindowDays: *checkinWindow,
@@ -416,70 +442,70 @@ func clamp(value, min, max float64) float64 {
 	return value
 }
 
-func buildSummary(items []awardItem, dueSoonDays int) string {
-	if len(items) == 0 {
-		return "No records loaded."
+func calculateSummaryMetrics(items []awardItem) summaryMetrics {
+	metrics := summaryMetrics{
+		Count:    len(items),
+		Upcoming: make([]string, 0, len(items)),
 	}
-	var totalAwarded, totalDisbursed float64
-	ahead := 0
-	onTrack := 0
-	behind := 0
-	overdue := 0
-	dueSoon := 0
-	high := 0
-	medium := 0
-	low := 0
-	upcoming := make([]string, 0, len(items))
 	for _, item := range items {
 		record := item.data
-		totalAwarded += record.Amount
-		totalDisbursed += record.DisbursedToDate
+		metrics.TotalAwarded += record.Amount
+		metrics.TotalDisbursed += record.DisbursedToDate
 		switch item.pace.Label {
 		case "Ahead":
-			ahead++
+			metrics.Ahead++
 		case "Behind":
-			behind++
+			metrics.Behind++
 		default:
-			onTrack++
+			metrics.OnTrack++
 		}
 		if item.check.Label == "Overdue" {
-			overdue++
+			metrics.Overdue++
 		}
 		if item.check.Label == "Due Soon" {
-			dueSoon++
+			metrics.DueSoon++
 		}
 		switch item.risk.Level {
 		case "High":
-			high++
+			metrics.High++
 		case "Medium":
-			medium++
+			metrics.Medium++
 		default:
-			low++
+			metrics.Low++
 		}
 		if !item.check.Date.IsZero() && item.check.Label != "Overdue" {
-			upcoming = append(upcoming, item.check.Date.Format("Jan 2")+" · "+record.Scholar)
+			metrics.Upcoming = append(metrics.Upcoming, item.check.Date.Format("Jan 2")+" · "+record.Scholar)
 		}
 	}
-	completion := totalDisbursed / totalAwarded
-	sort.Strings(upcoming)
-	preview := strings.Join(upcoming, " | ")
+	if metrics.TotalAwarded > 0 {
+		metrics.Completion = metrics.TotalDisbursed / metrics.TotalAwarded
+	}
+	return metrics
+}
+
+func buildSummary(metrics summaryMetrics, dueSoonDays int) string {
+	if metrics.Count == 0 {
+		return "No records loaded."
+	}
+	sort.Strings(metrics.Upcoming)
+	preview := strings.Join(metrics.Upcoming, " | ")
 	if preview == "" {
 		preview = "None"
 	} else if len(preview) > 64 {
 		preview = preview[:64] + "…"
 	}
 	return fmt.Sprintf("$%0.0f awarded · $%0.0f disbursed (%0.1f%%) · Pace %d ahead / %d on / %d behind · Risk %d high / %d med / %d low · %d overdue · %d due in %d days · Next: %s",
-		totalAwarded,
-		totalDisbursed,
-		completion*100,
-		ahead,
-		onTrack,
-		behind,
-		high,
-		medium,
-		low,
-		overdue,
-		dueSoon,
+		metrics.TotalAwarded,
+		metrics.TotalDisbursed,
+		metrics.Completion*100,
+		metrics.Ahead,
+		metrics.OnTrack,
+		metrics.Behind,
+		metrics.High,
+		metrics.Medium,
+		metrics.Low,
+		metrics.Overdue,
+		metrics.DueSoon,
 		dueSoonDays,
 		preview,
 	)
@@ -579,7 +605,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	m.list, cmd = m.list.Update(msg)
 	index := m.list.Index()
 	m.detail = buildDetail(m.items, index)
-	m.summary = buildSummary(m.items, m.checkinWindowDays)
+	m.summary = buildSummary(calculateSummaryMetrics(m.items), m.checkinWindowDays)
 	return m, cmd
 }
 

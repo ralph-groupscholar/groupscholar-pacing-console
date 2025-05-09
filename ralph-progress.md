@@ -24,3 +24,8 @@
 - Added Postgres-backed loading for award pacing data with an optional db-url flag.
 - Introduced a database loader with date formatting and null-safe handling.
 - Documented database usage in the README.
+
+## Iteration 4
+- Added Postgres snapshot sync plus optional DB-backed loading for the pacing console.
+- Created schema/seed SQL and wired the CLI flag for snapshot writes.
+- Fixed the summary initialization to align with the metrics pipeline.
