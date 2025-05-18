@@ -29,3 +29,8 @@
 - Added Postgres snapshot sync plus optional DB-backed loading for the pacing console.
 - Created schema/seed SQL and wired the CLI flag for snapshot writes.
 - Fixed the summary initialization to align with the metrics pipeline.
+
+## Iteration 4
+- Repaired and finalized Postgres integration with schema creation, snapshot writes, and safe DB loading.
+- Added explicit data-source and db-sync controls plus summary metric recalculation to keep the TUI consistent.
+- Seeded the production database with the current pacing snapshot and refreshed README usage notes.
