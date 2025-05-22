@@ -1,11 +1,13 @@
 package main
 
 import (
+	"encoding/csv"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"math"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -112,6 +114,8 @@ func main() {
 	checkinWindow := flag.Int("checkin-window", 14, "days before a check-in is considered due soon")
 	source := flag.String("source", "file", "data source: file or db")
 	dbSync := flag.Bool("db-sync", false, "write a pacing snapshot to Postgres (requires GS_PACING_DB_DSN or -db-url)")
+	exportPath := flag.String("export", "", "export snapshot to csv or json (path)")
+	exportFilter := flag.String("export-filter", "all", "export filter: all, risk, high")
 	flag.Parse()
 
 	var (
@@ -135,6 +139,21 @@ func main() {
 			fmt.Println("error syncing database:", err)
 			os.Exit(1)
 		}
+		return
+	}
+	if strings.TrimSpace(*exportPath) != "" {
+		filterMode, err := normalizeFilterMode(*exportFilter)
+		if err != nil {
+			fmt.Println("error exporting snapshot:", err)
+			os.Exit(1)
+		}
+		items := sortItems(applyFilter(baseItems, filterMode), "priority")
+		metrics := calculateSummaryMetrics(items)
+		if err := exportSnapshot(*exportPath, items, metrics, now, *checkinWindow); err != nil {
+			fmt.Println("error exporting snapshot:", err)
+			os.Exit(1)
+		}
+		fmt.Printf("Exported %d awards to %s\n", len(items), *exportPath)
 		return
 	}
 	items := sortItems(applyFilter(baseItems, "all"), "priority")
@@ -253,6 +272,20 @@ func applyFilter(items []awardItem, mode string) []awardItem {
 		}
 	}
 	return filtered
+}
+
+func normalizeFilterMode(mode string) (string, error) {
+	normalized := strings.ToLower(strings.TrimSpace(mode))
+	if normalized == "" || normalized == "all" {
+		return "all", nil
+	}
+	if normalized == "risk" {
+		return "risk", nil
+	}
+	if normalized == "high" {
+		return "high", nil
+	}
+	return "", fmt.Errorf("unknown filter mode: %s", mode)
 }
 
 func itemsToList(items []awardItem) []list.Item {
@@ -509,6 +542,226 @@ func buildSummary(metrics summaryMetrics, dueSoonDays int) string {
 		dueSoonDays,
 		preview,
 	)
+}
+
+type exportSummary struct {
+	Count          int      `json:"count"`
+	TotalAwarded   float64  `json:"total_awarded"`
+	TotalDisbursed float64  `json:"total_disbursed"`
+	Completion     float64  `json:"completion"`
+	Ahead          int      `json:"ahead"`
+	OnTrack        int      `json:"on_track"`
+	Behind         int      `json:"behind"`
+	Overdue        int      `json:"overdue"`
+	DueSoon        int      `json:"due_soon"`
+	High           int      `json:"high"`
+	Medium         int      `json:"medium"`
+	Low            int      `json:"low"`
+	Upcoming       []string `json:"upcoming"`
+}
+
+type exportItem struct {
+	Scholar         string   `json:"scholar"`
+	Cohort          string   `json:"cohort"`
+	Owner           string   `json:"owner"`
+	Status          string   `json:"status"`
+	Amount          float64  `json:"amount"`
+	DisbursedToDate float64  `json:"disbursed_to_date"`
+	AwardDate       string   `json:"award_date"`
+	TargetDate      string   `json:"target_date"`
+	NextCheckin     string   `json:"next_checkin"`
+	PaceLabel       string   `json:"pace_label"`
+	PacePercent     float64  `json:"pace_percent"`
+	PaceDelta       float64  `json:"pace_delta"`
+	ExpectedPercent float64  `json:"expected_percent"`
+	CheckinLabel    string   `json:"checkin_label"`
+	CheckinDays     *int     `json:"checkin_days,omitempty"`
+	RiskLevel       string   `json:"risk_level"`
+	RiskScore       int      `json:"risk_score"`
+	RiskFlags       []string `json:"risk_flags,omitempty"`
+	Notes           string   `json:"notes"`
+}
+
+type exportSnapshotPayload struct {
+	GeneratedAt       string        `json:"generated_at"`
+	CheckinWindowDays int           `json:"checkin_window_days"`
+	Summary           exportSummary `json:"summary"`
+	Items             []exportItem  `json:"items"`
+}
+
+func exportSnapshot(path string, items []awardItem, metrics summaryMetrics, generatedAt time.Time, checkinWindow int) error {
+	ext := strings.ToLower(filepath.Ext(path))
+	if ext == "" {
+		ext = ".csv"
+		path = path + ext
+	}
+	if ext == ".json" {
+		return exportSnapshotJSON(path, items, metrics, generatedAt, checkinWindow)
+	}
+	if ext == ".csv" {
+		return exportSnapshotCSV(path, items, metrics, generatedAt, checkinWindow)
+	}
+	return fmt.Errorf("unsupported export format: %s", ext)
+}
+
+func exportSnapshotJSON(path string, items []awardItem, metrics summaryMetrics, generatedAt time.Time, checkinWindow int) error {
+	payload := exportSnapshotPayload{
+		GeneratedAt:       generatedAt.Format(time.RFC3339),
+		CheckinWindowDays: checkinWindow,
+		Summary: exportSummary{
+			Count:          metrics.Count,
+			TotalAwarded:   metrics.TotalAwarded,
+			TotalDisbursed: metrics.TotalDisbursed,
+			Completion:     metrics.Completion,
+			Ahead:          metrics.Ahead,
+			OnTrack:        metrics.OnTrack,
+			Behind:         metrics.Behind,
+			Overdue:        metrics.Overdue,
+			DueSoon:        metrics.DueSoon,
+			High:           metrics.High,
+			Medium:         metrics.Medium,
+			Low:            metrics.Low,
+			Upcoming:       metrics.Upcoming,
+		},
+		Items: make([]exportItem, 0, len(items)),
+	}
+	for _, item := range items {
+		record := item.data
+		checkinDays := (*int)(nil)
+		if item.check.Label != "Unscheduled" {
+			days := item.check.Days
+			checkinDays = &days
+		}
+		payload.Items = append(payload.Items, exportItem{
+			Scholar:         record.Scholar,
+			Cohort:          record.Cohort,
+			Owner:           record.Owner,
+			Status:          record.Status,
+			Amount:          record.Amount,
+			DisbursedToDate: record.DisbursedToDate,
+			AwardDate:       record.AwardDate,
+			TargetDate:      record.TargetDate,
+			NextCheckin:     record.NextCheckin,
+			PaceLabel:       item.pace.Label,
+			PacePercent:     item.pace.Percent,
+			PaceDelta:       item.pace.Delta,
+			ExpectedPercent: item.pace.Expected,
+			CheckinLabel:    item.check.Label,
+			CheckinDays:     checkinDays,
+			RiskLevel:       item.risk.Level,
+			RiskScore:       item.risk.Score,
+			RiskFlags:       item.risk.Flags,
+			Notes:           record.Notes,
+		})
+	}
+	content, err := json.MarshalIndent(payload, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, content, 0o644)
+}
+
+func exportSnapshotCSV(path string, items []awardItem, metrics summaryMetrics, generatedAt time.Time, checkinWindow int) error {
+	file, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	writer := csv.NewWriter(file)
+	if err := writer.Write([]string{
+		"generated_at",
+		"checkin_window_days",
+		"summary_count",
+		"summary_total_awarded",
+		"summary_total_disbursed",
+		"summary_completion",
+		"summary_ahead",
+		"summary_on_track",
+		"summary_behind",
+		"summary_overdue",
+		"summary_due_soon",
+		"summary_high",
+		"summary_medium",
+		"summary_low",
+	}); err != nil {
+		return err
+	}
+	if err := writer.Write([]string{
+		generatedAt.Format(time.RFC3339),
+		fmt.Sprintf("%d", checkinWindow),
+		fmt.Sprintf("%d", metrics.Count),
+		fmt.Sprintf("%0.2f", metrics.TotalAwarded),
+		fmt.Sprintf("%0.2f", metrics.TotalDisbursed),
+		fmt.Sprintf("%0.4f", metrics.Completion),
+		fmt.Sprintf("%d", metrics.Ahead),
+		fmt.Sprintf("%d", metrics.OnTrack),
+		fmt.Sprintf("%d", metrics.Behind),
+		fmt.Sprintf("%d", metrics.Overdue),
+		fmt.Sprintf("%d", metrics.DueSoon),
+		fmt.Sprintf("%d", metrics.High),
+		fmt.Sprintf("%d", metrics.Medium),
+		fmt.Sprintf("%d", metrics.Low),
+	}); err != nil {
+		return err
+	}
+
+	if err := writer.Write([]string{
+		"scholar",
+		"cohort",
+		"owner",
+		"status",
+		"amount",
+		"disbursed_to_date",
+		"award_date",
+		"target_date",
+		"next_checkin",
+		"pace_label",
+		"pace_percent",
+		"pace_delta",
+		"expected_percent",
+		"checkin_label",
+		"checkin_days",
+		"risk_level",
+		"risk_score",
+		"risk_flags",
+		"notes",
+	}); err != nil {
+		return err
+	}
+
+	for _, item := range items {
+		record := item.data
+		checkinDays := ""
+		if item.check.Label != "Unscheduled" {
+			checkinDays = fmt.Sprintf("%d", item.check.Days)
+		}
+		if err := writer.Write([]string{
+			record.Scholar,
+			record.Cohort,
+			record.Owner,
+			record.Status,
+			fmt.Sprintf("%0.2f", record.Amount),
+			fmt.Sprintf("%0.2f", record.DisbursedToDate),
+			record.AwardDate,
+			record.TargetDate,
+			record.NextCheckin,
+			item.pace.Label,
+			fmt.Sprintf("%0.4f", item.pace.Percent),
+			fmt.Sprintf("%0.4f", item.pace.Delta),
+			fmt.Sprintf("%0.4f", item.pace.Expected),
+			item.check.Label,
+			checkinDays,
+			item.risk.Level,
+			fmt.Sprintf("%d", item.risk.Score),
+			strings.Join(item.risk.Flags, "; "),
+			record.Notes,
+		}); err != nil {
+			return err
+		}
+	}
+	writer.Flush()
+	return writer.Error()
 }
 
 func buildDetail(items []awardItem, index int) string {

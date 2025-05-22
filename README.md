@@ -30,6 +30,13 @@ Load the latest snapshot from Postgres:
 go run . -source db -db-url "$PACECONSOLE_DATABASE_URL"
 ```
 
+Export the current snapshot to CSV or JSON (defaults to CSV if no extension):
+
+```bash
+go run . -export pacing-snapshot.csv
+go run . -export pacing-snapshot.json -export-filter risk
+```
+
 Write a fresh snapshot to Postgres (production only):
 
 ```bash

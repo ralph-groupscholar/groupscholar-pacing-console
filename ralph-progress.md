@@ -34,3 +34,8 @@
 - Repaired and finalized Postgres integration with schema creation, snapshot writes, and safe DB loading.
 - Added explicit data-source and db-sync controls plus summary metric recalculation to keep the TUI consistent.
 - Seeded the production database with the current pacing snapshot and refreshed README usage notes.
+
+## Iteration 5
+- Added export support for CSV or JSON snapshots with optional risk/high filtering.
+- Included summary metrics in the exports to support quick sharing with ops.
+- Documented export usage in the README.
