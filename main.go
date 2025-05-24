@@ -31,10 +31,12 @@ type Disbursement struct {
 }
 
 type paceStatus struct {
-	Label    string
-	Delta    float64
-	Percent  float64
-	Expected float64
+	Label          string
+	Delta          float64
+	Percent        float64
+	Expected       float64
+	ExpectedAmount float64
+	GapAmount      float64
 }
 
 type checkinStatus struct {
@@ -76,6 +78,8 @@ type summaryMetrics struct {
 	Count          int
 	TotalAwarded   float64
 	TotalDisbursed float64
+	TotalExpected  float64
+	TotalGap       float64
 	Completion     float64
 	Ahead          int
 	OnTrack        int
@@ -207,9 +211,10 @@ func buildItems(records []Disbursement, now time.Time, windowDays int) []awardIt
 		risk := calculateRisk(pace, check)
 		label := renderPaceLabel(pace)
 		percent := fmt.Sprintf("%0.1f%%", pace.Percent*100)
+		gapLabel := formatSignedCurrency(pace.GapAmount)
 		checkLabel := formatCheckinBadge(check)
 		riskLabel := renderRiskLabel(risk)
-		desc := fmt.Sprintf("%s · %s disbursed · %s · %s · %s", record.Cohort, percent, label, checkLabel, riskLabel)
+		desc := fmt.Sprintf("%s · %s disbursed · %s · %s · Gap %s · %s", record.Cohort, percent, label, checkLabel, gapLabel, riskLabel)
 		items = append(items, awardItem{
 			title: fmt.Sprintf("%s (%s)", record.Scholar, record.Owner),
 			desc:  desc,
@@ -304,11 +309,15 @@ func calculatePace(record Disbursement, now time.Time) paceStatus {
 	elapsedDays := math.Max(0, now.Sub(awardDate).Hours()/24)
 	expected := clamp(elapsedDays/totalDays, 0, 1)
 	percent := clamp(record.DisbursedToDate/record.Amount, 0, 1)
+	expectedAmount := record.Amount * expected
+	gapAmount := record.DisbursedToDate - expectedAmount
 	return paceStatus{
-		Label:    paceLabel(percent - expected),
-		Delta:    percent - expected,
-		Percent:  percent,
-		Expected: expected,
+		Label:          paceLabel(percent - expected),
+		Delta:          percent - expected,
+		Percent:        percent,
+		Expected:       expected,
+		ExpectedAmount: expectedAmount,
+		GapAmount:      gapAmount,
 	}
 }
 
@@ -418,6 +427,14 @@ func formatCheckinBadge(c checkinStatus) string {
 	return fmt.Sprintf("Check-in: %s (%s)", renderCheckinLabel(c), formatDaysLabel(c.Days))
 }
 
+func formatSignedCurrency(value float64) string {
+	sign := "-"
+	if value >= 0 {
+		sign = "+"
+	}
+	return fmt.Sprintf("%s$%0.0f", sign, math.Abs(value))
+}
+
 func calculateRisk(pace paceStatus, check checkinStatus) riskStatus {
 	score := 0
 	flags := make([]string, 0, 3)
@@ -484,6 +501,8 @@ func calculateSummaryMetrics(items []awardItem) summaryMetrics {
 		record := item.data
 		metrics.TotalAwarded += record.Amount
 		metrics.TotalDisbursed += record.DisbursedToDate
+		metrics.TotalExpected += item.pace.ExpectedAmount
+		metrics.TotalGap += item.pace.GapAmount
 		switch item.pace.Label {
 		case "Ahead":
 			metrics.Ahead++
@@ -527,10 +546,12 @@ func buildSummary(metrics summaryMetrics, dueSoonDays int) string {
 	} else if len(preview) > 64 {
 		preview = preview[:64] + "…"
 	}
-	return fmt.Sprintf("$%0.0f awarded · $%0.0f disbursed (%0.1f%%) · Pace %d ahead / %d on / %d behind · Risk %d high / %d med / %d low · %d overdue · %d due in %d days · Next: %s",
+	return fmt.Sprintf("$%0.0f awarded · $%0.0f disbursed (%0.1f%%) · Expected $%0.0f · Gap %s · Pace %d ahead / %d on / %d behind · Risk %d high / %d med / %d low · %d overdue · %d due in %d days · Next: %s",
 		metrics.TotalAwarded,
 		metrics.TotalDisbursed,
 		metrics.Completion*100,
+		metrics.TotalExpected,
+		formatSignedCurrency(metrics.TotalGap),
 		metrics.Ahead,
 		metrics.OnTrack,
 		metrics.Behind,
@@ -548,6 +569,8 @@ type exportSummary struct {
 	Count          int      `json:"count"`
 	TotalAwarded   float64  `json:"total_awarded"`
 	TotalDisbursed float64  `json:"total_disbursed"`
+	TotalExpected  float64  `json:"total_expected"`
+	TotalGap       float64  `json:"total_gap"`
 	Completion     float64  `json:"completion"`
 	Ahead          int      `json:"ahead"`
 	OnTrack        int      `json:"on_track"`
@@ -574,6 +597,8 @@ type exportItem struct {
 	PacePercent     float64  `json:"pace_percent"`
 	PaceDelta       float64  `json:"pace_delta"`
 	ExpectedPercent float64  `json:"expected_percent"`
+	ExpectedAmount  float64  `json:"expected_amount"`
+	GapAmount       float64  `json:"gap_amount"`
 	CheckinLabel    string   `json:"checkin_label"`
 	CheckinDays     *int     `json:"checkin_days,omitempty"`
 	RiskLevel       string   `json:"risk_level"`
@@ -612,6 +637,8 @@ func exportSnapshotJSON(path string, items []awardItem, metrics summaryMetrics, 
 			Count:          metrics.Count,
 			TotalAwarded:   metrics.TotalAwarded,
 			TotalDisbursed: metrics.TotalDisbursed,
+			TotalExpected:  metrics.TotalExpected,
+			TotalGap:       metrics.TotalGap,
 			Completion:     metrics.Completion,
 			Ahead:          metrics.Ahead,
 			OnTrack:        metrics.OnTrack,
@@ -646,6 +673,8 @@ func exportSnapshotJSON(path string, items []awardItem, metrics summaryMetrics, 
 			PacePercent:     item.pace.Percent,
 			PaceDelta:       item.pace.Delta,
 			ExpectedPercent: item.pace.Expected,
+			ExpectedAmount:  item.pace.ExpectedAmount,
+			GapAmount:       item.pace.GapAmount,
 			CheckinLabel:    item.check.Label,
 			CheckinDays:     checkinDays,
 			RiskLevel:       item.risk.Level,
@@ -675,6 +704,8 @@ func exportSnapshotCSV(path string, items []awardItem, metrics summaryMetrics, g
 		"summary_count",
 		"summary_total_awarded",
 		"summary_total_disbursed",
+		"summary_total_expected",
+		"summary_total_gap",
 		"summary_completion",
 		"summary_ahead",
 		"summary_on_track",
@@ -693,6 +724,8 @@ func exportSnapshotCSV(path string, items []awardItem, metrics summaryMetrics, g
 		fmt.Sprintf("%d", metrics.Count),
 		fmt.Sprintf("%0.2f", metrics.TotalAwarded),
 		fmt.Sprintf("%0.2f", metrics.TotalDisbursed),
+		fmt.Sprintf("%0.2f", metrics.TotalExpected),
+		fmt.Sprintf("%0.2f", metrics.TotalGap),
 		fmt.Sprintf("%0.4f", metrics.Completion),
 		fmt.Sprintf("%d", metrics.Ahead),
 		fmt.Sprintf("%d", metrics.OnTrack),
@@ -720,6 +753,8 @@ func exportSnapshotCSV(path string, items []awardItem, metrics summaryMetrics, g
 		"pace_percent",
 		"pace_delta",
 		"expected_percent",
+		"expected_amount",
+		"gap_amount",
 		"checkin_label",
 		"checkin_days",
 		"risk_level",
@@ -750,6 +785,8 @@ func exportSnapshotCSV(path string, items []awardItem, metrics summaryMetrics, g
 			fmt.Sprintf("%0.4f", item.pace.Percent),
 			fmt.Sprintf("%0.4f", item.pace.Delta),
 			fmt.Sprintf("%0.4f", item.pace.Expected),
+			fmt.Sprintf("%0.2f", item.pace.ExpectedAmount),
+			fmt.Sprintf("%0.2f", item.pace.GapAmount),
 			item.check.Label,
 			checkinDays,
 			item.risk.Level,
@@ -786,8 +823,12 @@ func buildDetail(items []awardItem, index int) string {
 	if len(risk.Flags) > 0 {
 		riskLine = fmt.Sprintf("%s (%s)", risk.Level, strings.Join(risk.Flags, "; "))
 	}
+	gapDirection := "behind"
+	if pace.GapAmount >= 0 {
+		gapDirection = "ahead"
+	}
 	return fmt.Sprintf(
-		"Scholar: %s\nCohort: %s\nOwner: %s\nStatus: %s\nAwarded: $%0.0f\nDisbursed: $%0.0f (%0.1f%%)\nExpected: %0.1f%%\nPace: %s (%0.1f%%)\nRisk: %s\nCheck-in: %s\nNotes: %s",
+		"Scholar: %s\nCohort: %s\nOwner: %s\nStatus: %s\nAwarded: $%0.0f\nDisbursed: $%0.0f (%0.1f%%)\nExpected: %0.1f%% ($%0.0f)\nGap vs expected: %s (%s)\nPace: %s (%0.1f%%)\nRisk: %s\nCheck-in: %s\nNotes: %s",
 		record.Scholar,
 		record.Cohort,
 		record.Owner,
@@ -796,6 +837,9 @@ func buildDetail(items []awardItem, index int) string {
 		record.DisbursedToDate,
 		pace.Percent*100,
 		pace.Expected*100,
+		pace.ExpectedAmount,
+		formatSignedCurrency(pace.GapAmount),
+		gapDirection,
 		pace.Label,
 		pace.Delta*100,
 		riskLine,

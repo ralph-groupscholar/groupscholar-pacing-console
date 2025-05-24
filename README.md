@@ -4,7 +4,7 @@ Group Scholar Pacing Console is a Go-based TUI that monitors award disbursement 
 
 ## Features
 - Award pacing status derived from disbursed vs expected progress
-- Summary header with awarded/disbursed totals, pace mix, and check-in risk counts
+- Summary header with awarded/disbursed/expected totals, gap amounts, pace mix, and check-in risk counts
 - Check-in urgency signals (overdue / due soon / upcoming)
 - TUI list with filter support and detail panel
 - Priority sort plus quick focus filter for risk items
@@ -36,6 +36,8 @@ Export the current snapshot to CSV or JSON (defaults to CSV if no extension):
 go run . -export pacing-snapshot.csv
 go run . -export pacing-snapshot.json -export-filter risk
 ```
+
+Exports include expected disbursement amounts and gap deltas for each award.
 
 Write a fresh snapshot to Postgres (production only):
 

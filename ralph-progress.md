@@ -39,3 +39,8 @@
 - Added export support for CSV or JSON snapshots with optional risk/high filtering.
 - Included summary metrics in the exports to support quick sharing with ops.
 - Documented export usage in the README.
+
+## Iteration 5
+- Added expected disbursement and gap calculations to pace status for each award.
+- Expanded the summary header, list description, and detail view with expected/gap insights.
+- Extended snapshot exports to include expected amounts and gap deltas.
