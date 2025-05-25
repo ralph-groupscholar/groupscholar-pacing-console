@@ -49,3 +49,13 @@
 - Added an insights panel that summarizes owner risk pulse, cohort watchlist, and status mix.
 - Introduced owner/cohort/status aggregation helpers with sorting for risk focus.
 - Added Go tests for pace calculation, risk scoring, and insights rendering.
+
+## Iteration 7
+- Added shareable pacing report output (text or JSON) with stdout support.
+- Included report payloads for owners, cohorts, status mix, and summary metrics.
+- Added report-focused Go tests and documented report usage.
+
+## Iteration 8
+- Added Postgres-backed trend reporting to compare the latest two pacing snapshots.
+- Included text/JSON trend outputs with delta summaries for awards, check-ins, and risk mix.
+- Added tests and README updates for the new trend reporting flag.

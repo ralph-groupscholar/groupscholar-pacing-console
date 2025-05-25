@@ -66,6 +66,7 @@ type model struct {
 	summary           string
 	detail            string
 	insights          string
+	filterSummary     string
 	ready             bool
 	width             int
 	height            int
@@ -100,6 +101,12 @@ type riskStatus struct {
 	Score int
 }
 
+type recordFilters struct {
+	owners   map[string]struct{}
+	cohorts  map[string]struct{}
+	statuses map[string]struct{}
+}
+
 var (
 	accent       = lipgloss.NewStyle().Foreground(lipgloss.Color("205")).Bold(true)
 	subtle       = lipgloss.NewStyle().Foreground(lipgloss.Color("244"))
@@ -122,7 +129,30 @@ func main() {
 	dbSync := flag.Bool("db-sync", false, "write a pacing snapshot to Postgres (requires GS_PACING_DB_DSN or -db-url)")
 	exportPath := flag.String("export", "", "export snapshot to csv or json (path)")
 	exportFilter := flag.String("export-filter", "all", "export filter: all, risk, high")
+	reportPath := flag.String("report", "", "write a pacing report to txt or json (path or stdout)")
+	reportFormat := flag.String("report-format", "", "report format: text or json (optional)")
+	trendReportPath := flag.String("trend-report", "", "write a pacing trend report from the latest two snapshots (path or stdout)")
+	trendReportFormat := flag.String("trend-format", "", "trend report format: text or json (optional)")
+	ownerFilter := flag.String("owner", "", "filter to specific owner(s), comma-separated")
+	cohortFilter := flag.String("cohort", "", "filter to specific cohort(s), comma-separated")
+	statusFilter := flag.String("status", "", "filter to specific status values, comma-separated")
 	flag.Parse()
+
+	if strings.TrimSpace(*trendReportPath) != "" {
+		current, previous, err := loadTrendSnapshots(*dbURL)
+		if err != nil {
+			fmt.Println("error loading trend snapshots:", err)
+			os.Exit(1)
+		}
+		if err := writeTrendReport(*trendReportPath, *trendReportFormat, current, previous, time.Now()); err != nil {
+			fmt.Println("error writing trend report:", err)
+			os.Exit(1)
+		}
+		if !isStdoutTarget(*trendReportPath) {
+			fmt.Printf("Wrote trend report to %s\n", *trendReportPath)
+		}
+		return
+	}
 
 	var (
 		records []Disbursement
@@ -139,6 +169,8 @@ func main() {
 	}
 
 	now := time.Now()
+	filters := parseRecordFilters(*ownerFilter, *cohortFilter, *statusFilter)
+	records = applyRecordFilters(records, filters)
 	baseItems := buildItems(records, now, *checkinWindow)
 	if *dbSync {
 		if err := syncToDatabase(baseItems, *checkinWindow, *dbURL); err != nil {
@@ -162,6 +194,18 @@ func main() {
 		fmt.Printf("Exported %d awards to %s\n", len(items), *exportPath)
 		return
 	}
+	if strings.TrimSpace(*reportPath) != "" {
+		items := sortItems(applyFilter(baseItems, "all"), "priority")
+		metrics := calculateSummaryMetrics(items)
+		if err := writeReport(*reportPath, *reportFormat, items, metrics, now, *checkinWindow); err != nil {
+			fmt.Println("error writing report:", err)
+			os.Exit(1)
+		}
+		if !isStdoutTarget(*reportPath) {
+			fmt.Printf("Wrote report to %s\n", *reportPath)
+		}
+		return
+	}
 	items := sortItems(applyFilter(baseItems, "all"), "priority")
 	metrics := calculateSummaryMetrics(items)
 	listModel := list.New(itemsToList(items), list.NewDefaultDelegate(), 0, 0)
@@ -178,6 +222,7 @@ func main() {
 		summary:           buildSummary(metrics, *checkinWindow),
 		detail:            buildDetail(items, 0),
 		insights:          buildInsights(items),
+		filterSummary:     buildRecordFilterSummary(filters),
 		updatedAt:         now,
 		checkinWindowDays: *checkinWindow,
 		sortMode:          "priority",
@@ -323,6 +368,99 @@ func calculatePace(record Disbursement, now time.Time) paceStatus {
 		ExpectedAmount: expectedAmount,
 		GapAmount:      gapAmount,
 	}
+}
+
+func parseRecordFilters(ownerRaw, cohortRaw, statusRaw string) recordFilters {
+	return recordFilters{
+		owners:   parseFilterList(ownerRaw),
+		cohorts:  parseFilterList(cohortRaw),
+		statuses: parseFilterList(statusRaw),
+	}
+}
+
+func parseFilterList(raw string) map[string]struct{} {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return nil
+	}
+	parts := strings.Split(trimmed, ",")
+	values := make(map[string]struct{})
+	for _, part := range parts {
+		value := strings.ToLower(strings.TrimSpace(part))
+		if value == "" {
+			continue
+		}
+		values[value] = struct{}{}
+	}
+	if len(values) == 0 {
+		return nil
+	}
+	return values
+}
+
+func applyRecordFilters(records []Disbursement, filters recordFilters) []Disbursement {
+	if filters.owners == nil && filters.cohorts == nil && filters.statuses == nil {
+		return records
+	}
+	filtered := make([]Disbursement, 0, len(records))
+	for _, record := range records {
+		if !matchesRecordFilters(record, filters) {
+			continue
+		}
+		filtered = append(filtered, record)
+	}
+	return filtered
+}
+
+func matchesRecordFilters(record Disbursement, filters recordFilters) bool {
+	if filters.owners != nil {
+		owner := strings.ToLower(strings.TrimSpace(record.Owner))
+		if _, ok := filters.owners[owner]; !ok {
+			return false
+		}
+	}
+	if filters.cohorts != nil {
+		cohort := strings.ToLower(strings.TrimSpace(record.Cohort))
+		if _, ok := filters.cohorts[cohort]; !ok {
+			return false
+		}
+	}
+	if filters.statuses != nil {
+		status := strings.ToLower(strings.TrimSpace(record.Status))
+		if status == "" {
+			status = "unspecified"
+		}
+		if _, ok := filters.statuses[status]; !ok {
+			return false
+		}
+	}
+	return true
+}
+
+func buildRecordFilterSummary(filters recordFilters) string {
+	parts := make([]string, 0, 3)
+	if len(filters.owners) > 0 {
+		parts = append(parts, "owner="+strings.Join(sortedKeys(filters.owners), ", "))
+	}
+	if len(filters.cohorts) > 0 {
+		parts = append(parts, "cohort="+strings.Join(sortedKeys(filters.cohorts), ", "))
+	}
+	if len(filters.statuses) > 0 {
+		parts = append(parts, "status="+strings.Join(sortedKeys(filters.statuses), ", "))
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return "Filters: " + strings.Join(parts, " · ")
+}
+
+func sortedKeys(values map[string]struct{}) []string {
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 func calculateCheckin(record Disbursement, now time.Time, windowDays int) checkinStatus {
@@ -618,6 +756,15 @@ type exportSnapshotPayload struct {
 	Items             []exportItem  `json:"items"`
 }
 
+type reportPayload struct {
+	GeneratedAt       string          `json:"generated_at"`
+	CheckinWindowDays int             `json:"checkin_window_days"`
+	Summary           exportSummary   `json:"summary"`
+	Owners            []ownerSummary  `json:"owners"`
+	Cohorts           []cohortSummary `json:"cohorts"`
+	Statuses          []statusSummary `json:"statuses"`
+}
+
 type ownerSummary struct {
 	Owner    string
 	Awards   int
@@ -825,6 +972,153 @@ func exportSnapshotCSV(path string, items []awardItem, metrics summaryMetrics, g
 	}
 	writer.Flush()
 	return writer.Error()
+}
+
+func writeReport(path, format string, items []awardItem, metrics summaryMetrics, generatedAt time.Time, checkinWindow int) error {
+	format, err := normalizeReportFormat(path, format)
+	if err != nil {
+		return err
+	}
+	if format == "json" {
+		payload := buildReportPayload(items, metrics, generatedAt, checkinWindow)
+		content, err := json.MarshalIndent(payload, "", "  ")
+		if err != nil {
+			return err
+		}
+		return writeReportOutput(path, content)
+	}
+	content := []byte(buildReportText(items, metrics, generatedAt, checkinWindow))
+	return writeReportOutput(path, content)
+}
+
+func writeReportOutput(path string, content []byte) error {
+	if isStdoutTarget(path) {
+		fmt.Print(string(content))
+		return nil
+	}
+	return os.WriteFile(path, content, 0o644)
+}
+
+func isStdoutTarget(path string) bool {
+	trimmed := strings.TrimSpace(path)
+	return trimmed == "-" || strings.EqualFold(trimmed, "stdout")
+}
+
+func normalizeReportFormat(path, format string) (string, error) {
+	format = strings.TrimSpace(strings.ToLower(format))
+	if format == "" {
+		ext := strings.ToLower(filepath.Ext(path))
+		if ext == ".json" {
+			return "json", nil
+		}
+		return "text", nil
+	}
+	if format == "text" || format == "txt" {
+		return "text", nil
+	}
+	if format == "json" {
+		return "json", nil
+	}
+	return "", fmt.Errorf("unsupported report format: %s", format)
+}
+
+func buildReportPayload(items []awardItem, metrics summaryMetrics, generatedAt time.Time, checkinWindow int) reportPayload {
+	return reportPayload{
+		GeneratedAt:       generatedAt.Format(time.RFC3339),
+		CheckinWindowDays: checkinWindow,
+		Summary: exportSummary{
+			Count:          metrics.Count,
+			TotalAwarded:   metrics.TotalAwarded,
+			TotalDisbursed: metrics.TotalDisbursed,
+			TotalExpected:  metrics.TotalExpected,
+			TotalGap:       metrics.TotalGap,
+			Completion:     metrics.Completion,
+			Ahead:          metrics.Ahead,
+			OnTrack:        metrics.OnTrack,
+			Behind:         metrics.Behind,
+			Overdue:        metrics.Overdue,
+			DueSoon:        metrics.DueSoon,
+			High:           metrics.High,
+			Medium:         metrics.Medium,
+			Low:            metrics.Low,
+			Upcoming:       metrics.Upcoming,
+		},
+		Owners:   buildOwnerSummaries(items),
+		Cohorts:  buildCohortSummaries(items),
+		Statuses: buildStatusSummary(items),
+	}
+}
+
+func buildReportText(items []awardItem, metrics summaryMetrics, generatedAt time.Time, checkinWindow int) string {
+	lines := []string{
+		"Group Scholar Pacing Report",
+		fmt.Sprintf("Generated: %s", generatedAt.Format(time.RFC3339)),
+		fmt.Sprintf("Check-in window: %d days", checkinWindow),
+		"",
+		fmt.Sprintf("Awards tracked: %d", metrics.Count),
+		fmt.Sprintf("Total awarded: %0.2f", metrics.TotalAwarded),
+		fmt.Sprintf("Total disbursed: %0.2f", metrics.TotalDisbursed),
+		fmt.Sprintf("Total expected: %0.2f", metrics.TotalExpected),
+		fmt.Sprintf("Total gap: %0.2f", metrics.TotalGap),
+		fmt.Sprintf("Completion: %0.1f%%", metrics.Completion*100),
+		fmt.Sprintf("Pace mix: Ahead %d · On track %d · Behind %d", metrics.Ahead, metrics.OnTrack, metrics.Behind),
+		fmt.Sprintf("Risk mix: High %d · Medium %d · Low %d", metrics.High, metrics.Medium, metrics.Low),
+		fmt.Sprintf("Check-ins: Overdue %d · Due soon %d", metrics.Overdue, metrics.DueSoon),
+	}
+	if len(metrics.Upcoming) > 0 {
+		lines = append(lines, fmt.Sprintf("Upcoming check-ins: %s", strings.Join(metrics.Upcoming, ", ")))
+	}
+
+	ownerSummaries := buildOwnerSummaries(items)
+	lines = append(lines, "", "Owner pulse:")
+	for i, summary := range ownerSummaries {
+		if i >= 5 {
+			break
+		}
+		lines = append(lines, fmt.Sprintf("- %s · %d awards · %d high · %d overdue · %s gap",
+			summary.Owner,
+			summary.Awards,
+			summary.High,
+			summary.Overdue,
+			formatSignedCurrency(summary.GapTotal),
+		))
+	}
+	if len(ownerSummaries) == 0 {
+		lines = append(lines, "- None")
+	}
+
+	cohortSummaries := buildCohortSummaries(items)
+	lines = append(lines, "", "Cohort watchlist:")
+	cohortCount := 0
+	for _, summary := range cohortSummaries {
+		if summary.Behind == 0 && summary.GapTotal >= 0 {
+			continue
+		}
+		lines = append(lines, fmt.Sprintf("- %s · %d behind · %s gap · %0.1f%% complete",
+			summary.Cohort,
+			summary.Behind,
+			formatSignedCurrency(summary.GapTotal),
+			summary.Completion*100,
+		))
+		cohortCount++
+		if cohortCount >= 4 {
+			break
+		}
+	}
+	if cohortCount == 0 {
+		lines = append(lines, "- None")
+	}
+
+	statusSummaries := buildStatusSummary(items)
+	statusParts := make([]string, 0, len(statusSummaries))
+	for _, summary := range statusSummaries {
+		statusParts = append(statusParts, fmt.Sprintf("%s %d", summary.Status, summary.Count))
+	}
+	if len(statusParts) > 0 {
+		lines = append(lines, "", fmt.Sprintf("Status mix: %s", strings.Join(statusParts, " · ")))
+	}
+
+	return strings.Join(lines, "\n") + "\n"
 }
 
 func buildOwnerSummaries(items []awardItem) []ownerSummary {
@@ -1101,6 +1395,10 @@ func (m model) View() string {
 	header := headerStyle.Render("Group Scholar Award Pacing Console")
 	meta := subtle.Render(fmt.Sprintf("Press / to filter · s to sort (%s) · f to focus (%s) · i for insights · r to refresh timestamp · q to quit", m.sortMode, m.filterMode))
 	stamp := subtle.Render("Updated " + m.updatedAt.Format("Jan 2 15:04"))
+	lines := []string{header, meta, stamp}
+	if m.filterSummary != "" {
+		lines = append(lines, subtle.Render(m.filterSummary))
+	}
 
 	left := panel.Render(m.list.View())
 	rightPanel := m.detail
@@ -1111,11 +1409,6 @@ func (m model) View() string {
 
 	columns := lipgloss.JoinHorizontal(lipgloss.Top, left, right)
 
-	return strings.Join([]string{
-		header,
-		meta,
-		stamp,
-		accent.Render(m.summary),
-		columns,
-	}, "\n\n")
+	lines = append(lines, accent.Render(m.summary), columns)
+	return strings.Join(lines, "\n\n")
 }

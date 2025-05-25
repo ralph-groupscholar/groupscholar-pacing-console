@@ -364,3 +364,72 @@ func formatNullableDate(value sql.NullTime) string {
 	}
 	return value.Time.Format("2006-01-02")
 }
+
+func loadTrendSnapshots(dsn string) (snapshotStats, snapshotStats, error) {
+	dsn = strings.TrimSpace(dsn)
+	if dsn == "" {
+		return snapshotStats{}, snapshotStats{}, errors.New("db-url is required to load trend snapshots")
+	}
+
+	db, err := sql.Open("pgx", dsn)
+	if err != nil {
+		return snapshotStats{}, snapshotStats{}, err
+	}
+	defer db.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	rows, err := db.QueryContext(ctx, `
+		SELECT generated_at,
+			record_count,
+			due_soon_window,
+			total_awarded,
+			total_disbursed,
+			ahead_count,
+			on_track_count,
+			behind_count,
+			overdue_count,
+			due_soon_count,
+			high_risk_count,
+			medium_risk_count,
+			low_risk_count
+		FROM groupscholar_pacing_console.pacing_snapshots
+		ORDER BY generated_at DESC
+		LIMIT 2;
+	`)
+	if err != nil {
+		return snapshotStats{}, snapshotStats{}, err
+	}
+	defer rows.Close()
+
+	snapshots := make([]snapshotStats, 0, 2)
+	for rows.Next() {
+		var stats snapshotStats
+		if err := rows.Scan(
+			&stats.GeneratedAt,
+			&stats.RecordCount,
+			&stats.DueSoonWindow,
+			&stats.TotalAwarded,
+			&stats.TotalDisbursed,
+			&stats.Ahead,
+			&stats.OnTrack,
+			&stats.Behind,
+			&stats.Overdue,
+			&stats.DueSoon,
+			&stats.High,
+			&stats.Medium,
+			&stats.Low,
+		); err != nil {
+			return snapshotStats{}, snapshotStats{}, err
+		}
+		snapshots = append(snapshots, stats)
+	}
+	if err := rows.Err(); err != nil {
+		return snapshotStats{}, snapshotStats{}, err
+	}
+	if len(snapshots) < 2 {
+		return snapshotStats{}, snapshotStats{}, errors.New("need at least two snapshots to build a trend report")
+	}
+	return snapshots[0], snapshots[1], nil
+}

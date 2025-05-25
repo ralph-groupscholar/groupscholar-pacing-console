@@ -10,6 +10,8 @@ Group Scholar Pacing Console is a Go-based TUI that monitors award disbursement 
 - TUI list with filter support and detail panel
 - Priority sort plus quick focus filter for risk items
 - Sample disbursement dataset for quick demos
+- Shareable pacing reports in text or JSON
+- Trend reports comparing the latest two Postgres snapshots
 
 ## Getting started
 
@@ -40,6 +42,21 @@ go run . -export pacing-snapshot.json -export-filter risk
 
 Exports include expected disbursement amounts and gap deltas for each award.
 
+Generate a pacing report (text default, JSON supported; use `-` for stdout):
+
+```bash
+go run . -report pacing-report.txt
+go run . -report pacing-report.json
+go run . -report - -report-format text
+```
+
+Generate a trend report from the latest two Postgres snapshots:
+
+```bash
+go run . -trend-report pacing-trend.txt -db-url "$PACECONSOLE_DATABASE_URL"
+go run . -trend-report - -trend-format json -db-url "$PACECONSOLE_DATABASE_URL"
+```
+
 Write a fresh snapshot to Postgres (production only):
 
 ```bash
@@ -50,6 +67,13 @@ Adjust the due-soon window for check-ins (default 14 days):
 
 ```bash
 go run . -checkin-window 10
+```
+
+Filter the dataset before loading the console (comma-separated, case-insensitive):
+
+```bash
+go run . -owner "Maya R.,Jordan P."
+go run . -cohort "Spring 2025" -status "Active,Unspecified"
 ```
 
 ## Data format
