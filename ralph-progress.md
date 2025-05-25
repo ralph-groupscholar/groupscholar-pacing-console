@@ -44,3 +44,8 @@
 - Added expected disbursement and gap calculations to pace status for each award.
 - Expanded the summary header, list description, and detail view with expected/gap insights.
 - Extended snapshot exports to include expected amounts and gap deltas.
+
+## Iteration 6
+- Added an insights panel that summarizes owner risk pulse, cohort watchlist, and status mix.
+- Introduced owner/cohort/status aggregation helpers with sorting for risk focus.
+- Added Go tests for pace calculation, risk scoring, and insights rendering.

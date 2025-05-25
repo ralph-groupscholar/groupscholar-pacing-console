@@ -65,6 +65,7 @@ type model struct {
 	records           []Disbursement
 	summary           string
 	detail            string
+	insights          string
 	ready             bool
 	width             int
 	height            int
@@ -72,6 +73,7 @@ type model struct {
 	checkinWindowDays int
 	sortMode          string
 	filterMode        string
+	showInsights      bool
 }
 
 type summaryMetrics struct {
@@ -175,10 +177,12 @@ func main() {
 		records:           records,
 		summary:           buildSummary(metrics, *checkinWindow),
 		detail:            buildDetail(items, 0),
+		insights:          buildInsights(items),
 		updatedAt:         now,
 		checkinWindowDays: *checkinWindow,
 		sortMode:          "priority",
 		filterMode:        "all",
+		showInsights:      false,
 	}
 
 	if _, err := tea.NewProgram(m, tea.WithAltScreen()).Run(); err != nil {
@@ -614,6 +618,28 @@ type exportSnapshotPayload struct {
 	Items             []exportItem  `json:"items"`
 }
 
+type ownerSummary struct {
+	Owner    string
+	Awards   int
+	High     int
+	Overdue  int
+	DueSoon  int
+	GapTotal float64
+}
+
+type cohortSummary struct {
+	Cohort     string
+	Awards     int
+	Behind     int
+	GapTotal   float64
+	Completion float64
+}
+
+type statusSummary struct {
+	Status string
+	Count  int
+}
+
 func exportSnapshot(path string, items []awardItem, metrics summaryMetrics, generatedAt time.Time, checkinWindow int) error {
 	ext := strings.ToLower(filepath.Ext(path))
 	if ext == "" {
@@ -801,6 +827,164 @@ func exportSnapshotCSV(path string, items []awardItem, metrics summaryMetrics, g
 	return writer.Error()
 }
 
+func buildOwnerSummaries(items []awardItem) []ownerSummary {
+	index := make(map[string]*ownerSummary)
+	for _, item := range items {
+		owner := item.data.Owner
+		entry, ok := index[owner]
+		if !ok {
+			entry = &ownerSummary{Owner: owner}
+			index[owner] = entry
+		}
+		entry.Awards++
+		entry.GapTotal += item.pace.GapAmount
+		if item.risk.Level == "High" {
+			entry.High++
+		}
+		if item.check.Label == "Overdue" {
+			entry.Overdue++
+		}
+		if item.check.Label == "Due Soon" {
+			entry.DueSoon++
+		}
+	}
+	summaries := make([]ownerSummary, 0, len(index))
+	for _, entry := range index {
+		summaries = append(summaries, *entry)
+	}
+	sort.SliceStable(summaries, func(i, j int) bool {
+		if summaries[i].High != summaries[j].High {
+			return summaries[i].High > summaries[j].High
+		}
+		if summaries[i].Overdue != summaries[j].Overdue {
+			return summaries[i].Overdue > summaries[j].Overdue
+		}
+		if summaries[i].GapTotal != summaries[j].GapTotal {
+			return summaries[i].GapTotal < summaries[j].GapTotal
+		}
+		return strings.ToLower(summaries[i].Owner) < strings.ToLower(summaries[j].Owner)
+	})
+	return summaries
+}
+
+func buildCohortSummaries(items []awardItem) []cohortSummary {
+	index := make(map[string]*cohortSummary)
+	for _, item := range items {
+		cohort := item.data.Cohort
+		entry, ok := index[cohort]
+		if !ok {
+			entry = &cohortSummary{Cohort: cohort}
+			index[cohort] = entry
+		}
+		entry.Awards++
+		entry.GapTotal += item.pace.GapAmount
+		if item.pace.Label == "Behind" {
+			entry.Behind++
+		}
+		if item.data.Amount > 0 {
+			entry.Completion += item.data.DisbursedToDate / item.data.Amount
+		}
+	}
+	summaries := make([]cohortSummary, 0, len(index))
+	for _, entry := range index {
+		if entry.Awards > 0 {
+			entry.Completion = entry.Completion / float64(entry.Awards)
+		}
+		summaries = append(summaries, *entry)
+	}
+	sort.SliceStable(summaries, func(i, j int) bool {
+		if summaries[i].Behind != summaries[j].Behind {
+			return summaries[i].Behind > summaries[j].Behind
+		}
+		if summaries[i].GapTotal != summaries[j].GapTotal {
+			return summaries[i].GapTotal < summaries[j].GapTotal
+		}
+		return strings.ToLower(summaries[i].Cohort) < strings.ToLower(summaries[j].Cohort)
+	})
+	return summaries
+}
+
+func buildStatusSummary(items []awardItem) []statusSummary {
+	counts := make(map[string]int)
+	for _, item := range items {
+		status := strings.TrimSpace(item.data.Status)
+		if status == "" {
+			status = "Unspecified"
+		}
+		counts[status]++
+	}
+	summaries := make([]statusSummary, 0, len(counts))
+	for status, count := range counts {
+		summaries = append(summaries, statusSummary{Status: status, Count: count})
+	}
+	sort.SliceStable(summaries, func(i, j int) bool {
+		if summaries[i].Count != summaries[j].Count {
+			return summaries[i].Count > summaries[j].Count
+		}
+		return strings.ToLower(summaries[i].Status) < strings.ToLower(summaries[j].Status)
+	})
+	return summaries
+}
+
+func buildInsights(items []awardItem) string {
+	if len(items) == 0 {
+		return "No records loaded."
+	}
+	ownerSummaries := buildOwnerSummaries(items)
+	cohortSummaries := buildCohortSummaries(items)
+	statusSummaries := buildStatusSummary(items)
+
+	ownerLines := make([]string, 0, 6)
+	ownerLines = append(ownerLines, "Owner pulse (top risk):")
+	for i, summary := range ownerSummaries {
+		if i >= 5 {
+			break
+		}
+		ownerLines = append(ownerLines, fmt.Sprintf("- %s · %d awards · %d high · %d overdue · %s gap",
+			summary.Owner,
+			summary.Awards,
+			summary.High,
+			summary.Overdue,
+			formatSignedCurrency(summary.GapTotal),
+		))
+	}
+
+	cohortLines := make([]string, 0, 6)
+	cohortLines = append(cohortLines, "Cohort watchlist:")
+	cohortCount := 0
+	for _, summary := range cohortSummaries {
+		if summary.Behind == 0 && summary.GapTotal >= 0 {
+			continue
+		}
+		cohortLines = append(cohortLines, fmt.Sprintf("- %s · %d behind · %s gap · %0.1f%% complete",
+			summary.Cohort,
+			summary.Behind,
+			formatSignedCurrency(summary.GapTotal),
+			summary.Completion*100,
+		))
+		cohortCount++
+		if cohortCount >= 4 {
+			break
+		}
+	}
+	if cohortCount == 0 {
+		cohortLines = append(cohortLines, "- None")
+	}
+
+	statusLine := "Status mix: "
+	statusParts := make([]string, 0, len(statusSummaries))
+	for _, summary := range statusSummaries {
+		statusParts = append(statusParts, fmt.Sprintf("%s %d", summary.Status, summary.Count))
+	}
+	statusLine += strings.Join(statusParts, " · ")
+
+	return strings.Join([]string{
+		strings.Join(ownerLines, "\n"),
+		strings.Join(cohortLines, "\n"),
+		statusLine,
+	}, "\n\n")
+}
+
 func buildDetail(items []awardItem, index int) string {
 	if len(items) == 0 || index < 0 || index >= len(items) {
 		return "Select an award to see details."
@@ -874,6 +1058,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.items = sortItems(applyFilter(m.baseItems, m.filterMode), m.sortMode)
 			m.list.SetItems(itemsToList(m.items))
 			m.list.Select(0)
+		case "i":
+			m.showInsights = !m.showInsights
 		case "s":
 			if m.sortMode == "priority" {
 				m.sortMode = "alpha"
@@ -903,6 +1089,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	index := m.list.Index()
 	m.detail = buildDetail(m.items, index)
 	m.summary = buildSummary(calculateSummaryMetrics(m.items), m.checkinWindowDays)
+	m.insights = buildInsights(m.items)
 	return m, cmd
 }
 
@@ -912,11 +1099,15 @@ func (m model) View() string {
 	}
 
 	header := headerStyle.Render("Group Scholar Award Pacing Console")
-	meta := subtle.Render(fmt.Sprintf("Press / to filter · s to sort (%s) · f to focus (%s) · r to refresh timestamp · q to quit", m.sortMode, m.filterMode))
+	meta := subtle.Render(fmt.Sprintf("Press / to filter · s to sort (%s) · f to focus (%s) · i for insights · r to refresh timestamp · q to quit", m.sortMode, m.filterMode))
 	stamp := subtle.Render("Updated " + m.updatedAt.Format("Jan 2 15:04"))
 
 	left := panel.Render(m.list.View())
-	right := panel.Render(m.detail)
+	rightPanel := m.detail
+	if m.showInsights {
+		rightPanel = m.insights
+	}
+	right := panel.Render(rightPanel)
 
 	columns := lipgloss.JoinHorizontal(lipgloss.Top, left, right)
 
